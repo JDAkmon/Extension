@@ -113,11 +113,24 @@ export class Dexie7 extends Dexie {
 				.toArray();
 
 			// Expire emote sets
+			// Emote sets still bound to a channel that is open in some tab must never be expired,
+			// otherwise the live queries in those tabs drop them and the emotes vanish.
+			const exemptSetIDs = new Set(
+				(await this.channels.where("id").anyOf(exemptChannels).toArray()).flatMap((c) => c.set_ids ?? []),
+			);
+			const expiredSetIDs = channels.flatMap((c) => c.set_ids ?? []).filter((id) => !exemptSetIDs.has(id));
+
+			// Expire emote sets
+			// Global sets are excluded: they are only fetched once when the SharedWorker spawns, and the
+			// worker already removes stale globals itself. The worker can outlive any single tab for hours
+			// (Chrome keeps it alive while any client remains, including frozen/discarded tabs), so
+			// age-expiring them here would delete global emotes until the worker happens to restart.
 			this.emoteSets
 				.where("id")
-				.anyOf(channels.map((c) => c.set_ids).reduce((a, b) => a.concat(b), []))
+				.anyOf(expiredSetIDs)
 				.or("timestamp")
 				.below(now - oneHour)
+				.and((es) => es.scope !== "GLOBAL" && !exemptSetIDs.has(es.id))
 				.delete();
 
 			// Clean up entitlements
